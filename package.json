@@ -1,20 +1,42 @@
 {
-  "name": "my-mcp-server",
-  "version": "1.0.0",
+  "name": "reflect-mcp",
+  "version": "1.0.1",
+  "description": "MCP server for Reflect Notes - connect your notes to Claude Desktop. Just run: npx reflect-mcp",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "bin": {
+    "reflect-mcp": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/index.ts",
-    "inspect": "npx fastmcp inspect src/index.ts",
-    "start": "node dist/index.js"
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "prepublishOnly": "npm run build"
   },
-  "keywords": [],
+  "keywords": [
+    "mcp",
+    "reflect",
+    "claude",
+    "ai",
+    "notes",
+    "model-context-protocol"
+  ],
   "author": "",
-  "license": "ISC",
-  "description": "A simple MCP server built with fastmcp",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "dotenv": "^17.2.3",
+    "@modelcontextprotocol/sdk": "^1.25.1",
+    "better-sqlite3": "^11.0.0",
     "fastmcp": "^3.25.4",
     "zod": "^4.1.13"
   },
