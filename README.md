@@ -2,14 +2,29 @@
 
 Connect your [Reflect](https://reflect.app) notes to Claude Desktop.
 
+## Prerequisites
+
+Before installing, make sure you have:
+
+- **Reflect Desktop** - Must be installed (but does not need to be running)
+  - Download from [reflect.app](https://reflect.app)
+
+- **Claude Desktop** - Required to use MCP servers
+  - Download from [claude.ai](https://claude.ai)
+
+- **Node.js** - Version 18 or higher recommended
+  - Download from [nodejs.org](https://nodejs.org)
+
 ## Quick Start
 
 **1. Install the server:**
+
 ```bash
 npx reflect-mcp install
 ```
 
 **2. Add to Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
 ```json
 {
   "mcpServers": {
@@ -75,4 +90,3 @@ npx reflect-mcp uninstall
 ## License
 
 MIT
-
