@@ -45,7 +45,22 @@ npx reflect-mcp install
 
 **4. Restart Claude Desktop**
 
-That's it! First time you use a Reflect tool, your browser will open to authenticate.(May need to restart it again if you see any auth issues)
+That's it! First time you use a Reflect tool, your browser will open to authenticate.
+
+> **Note:** If you see auth errors, try restarting Claude Desktop one more time.
+
+
+## Usage Examples
+
+Once installed, you can ask Claude to read and write your notes:
+
+- "Read all my notes tagged #spanish and create a study guide note with my biggest gaps"
+
+- "Read my last 3 daily notes and create a weekly summary note tagged #reflection"
+
+- "Look at notes tagged #work. Create a 'Career Development Plan' note based on what I'm learning and struggling with"
+
+- "Read my 1:1 meeting notes with [[manager]] and create a performance review prep note "
 
 ## Commands
 
@@ -93,6 +108,22 @@ npx reflect-mcp uninstall
 - `get_notes_with_tag` - Get notes with a specific tag
 - `get_note` - Get a note by title
 - `create_note` - Create a new note
+
+## Troubleshooting
+
+**Server won't start**
+- Check if port 3000 is available: `lsof -i :3000`
+- Try a different port: `npx reflect-mcp install --port 4000`
+
+**OAuth not working**
+- Restart Claude Desktop after installation
+- Check server is running: `npx reflect-mcp status`
+- Try uninstalling and reinstalling: `npx reflect-mcp uninstall && npx reflect-mcp install`
+
+**Database not found**
+- Ensure Reflect Desktop is installed
+- Verify database path exists at default location
+- Try specifying custom path: `npx reflect-mcp install /path/to/db`
 
 ## License
 
