@@ -7,23 +7,30 @@ Connect your [Reflect](https://reflect.app) notes to Claude Desktop.
 Before installing, make sure you have:
 
 - **Reflect Desktop** - Must be installed (but does not need to be running)
-  - Download from [reflect.app](https://reflect.app)
+  - Download from [reflect.app](https://reflect.app/download)
 
 - **Claude Desktop** - Required to use MCP servers
-  - Download from [claude.ai](https://claude.ai)
+  - Download from [claude.ai](https://claude.com/download)
 
 - **Node.js** - Version 18 or higher recommended
   - Download from [nodejs.org](https://nodejs.org)
 
 ## Quick Start
 
-**1. Install the server:**
+
+**1. Install the `reflect-mcp` package:**
+
+```bash
+npm install reflect-mcp
+```
+
+**2. Install the server:**
 
 ```bash
 npx reflect-mcp install
 ```
 
-**2. Add to Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+**3. Add to Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
@@ -36,9 +43,9 @@ npx reflect-mcp install
 }
 ```
 
-**3. Restart Claude Desktop**
+**4. Restart Claude Desktop**
 
-That's it! First time you use a Reflect tool, your browser will open to authenticate.
+That's it! First time you use a Reflect tool, your browser will open to authenticate.(May need to restart it again if you see any auth issues)
 
 ## Commands
 
