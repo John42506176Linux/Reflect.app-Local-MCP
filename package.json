@@ -1,6 +1,6 @@
 {
   "name": "reflect-mcp",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "MCP server for Reflect Notes - connect your notes to Claude Desktop. Just run: npx reflect-mcp",
   "type": "module",
   "main": "dist/server.js",
@@ -39,6 +39,7 @@
     "@modelcontextprotocol/sdk": "^1.25.1",
     "better-sqlite3": "^11.10.0",
     "fastmcp": "^3.25.4",
+    "reflect-mcp": "^1.0.3",
     "zod": "^4.1.13"
   },
   "devDependencies": {
