@@ -1,6 +1,6 @@
 {
   "name": "reflect-mcp",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "MCP server for Reflect Notes - connect your notes to Claude Desktop. Just run: npx reflect-mcp",
   "type": "module",
   "main": "dist/server.js",
@@ -15,7 +15,8 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "postinstall": "npm rebuild better-sqlite3 || true"
   },
   "keywords": [
     "mcp",
@@ -36,7 +37,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.1",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^11.10.0",
     "fastmcp": "^3.25.4",
     "zod": "^4.1.13"
   },
