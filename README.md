@@ -125,6 +125,8 @@ npx reflect-mcp uninstall
 - Verify database path exists at default location
 - Try specifying custom path: `npx reflect-mcp install /path/to/db`
 
+## Demo:
+https://www.loom.com/share/455b1d3eb7184bdea1ae4e8d5904fc53
 ## License
 
 MIT

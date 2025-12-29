@@ -15,7 +15,8 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "postinstall": "npm rebuild better-sqlite3 || true"
   },
   "keywords": [
     "mcp",
@@ -36,8 +37,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.1",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^11.10.0",
     "fastmcp": "^3.25.4",
+    "reflect-mcp": "^1.0.3",
     "zod": "^4.1.13"
   },
   "devDependencies": {

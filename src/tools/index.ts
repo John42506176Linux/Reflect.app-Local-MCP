@@ -14,7 +14,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
   // Tool: Get all Reflect graphs
   server.addTool({
     name: "get_graphs",
-    description: "Get a list of all Reflect graphs accessible with the current access token",
+    description: "Get a list of all Reflect graphs.",
     parameters: z.object({}),
     execute: async (_args, { session }) => {
       if (!session) {
@@ -66,14 +66,14 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
   // Tool: Get backlinks for a note from local Reflect SQLite database
   server.addTool({
     name: "get_backlinks",
-    description: "Get backlinks for a note from the local Reflect database. Returns notes that link to the specified note.",
+    description: "Get backlinks for a note from Reflect. Use  this tool to get more context about a note after calling the get_note tool.",
     parameters: z.object({
       subject: z.string().describe("The subject/title of the note to get backlinks for"),
-      graphId: z.string().default("rapheal-brain").describe("The graph ID to search in"),
+      graph_id: z.string().default("rapheal-brain").describe("The graph ID to search in"),
       limit: z.number().default(10).describe("Maximum number of backlinks to return"),
     }),
     execute: async (args) => {
-      const { subject, graphId, limit } = args;
+      const { subject, graph_id, limit } = args;
 
       try {
         const dbFile = resolvedDbPath;
@@ -89,7 +89,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           LIMIT ?
         `);
 
-        const results = stmt.all(subject, graphId, limit) as any[];
+        const results = stmt.all(subject, graph_id, limit) as any[];
         db.close();
 
         const backlinks = results.map((row) => ({
@@ -103,7 +103,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ subject, graphId, backlinks }, null, 2),
+              text: JSON.stringify({ subject, graph_id, backlinks }, null, 2),
             },
           ],
         };
@@ -123,13 +123,13 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
   // Tool: Get recent daily notes
   server.addTool({
     name: "get_daily_notes",
-    description: "Get the most recent daily notes from the local Reflect database",
+    description: "Get the most recent daily notes from Reflect.",
     parameters: z.object({
       limit: z.number().default(5).describe("Number of recent daily notes to return"),
-      graphId: z.string().default("rapheal-brain").describe("The graph ID to search in"),
+      graph_id: z.string().default("rapheal-brain").describe("The graph ID to search in"),
     }),
     execute: async (args) => {
-      const { limit, graphId } = args;
+      const { limit, graph_id } = args;
 
       try {
         const dbFile = resolvedDbPath;
@@ -143,7 +143,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           LIMIT ?
         `);
 
-        const rows = stmt.all(graphId, limit) as any[];
+        const rows = stmt.all(graph_id, limit) as any[];
         db.close();
 
         const dailyNotes = rows.map((row) => ({
@@ -153,14 +153,14 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           editedAt: formatDate(row.editedAt),
           tags: row.tags ? JSON.parse(row.tags) : [],
           dailyDate: formatDate(row.dailyDate),
-          graphId: row.graphId,
+          graph_id: row.graphId,
         }));
 
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ graphId, count: dailyNotes.length, dailyNotes }, null, 2),
+              text: JSON.stringify({ graph_id, count: dailyNotes.length, dailyNotes }, null, 2),
             },
           ],
         };
@@ -180,13 +180,13 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
   // Tool: Get daily note by date
   server.addTool({
     name: "get_daily_note_by_date",
-    description: "Get the daily note for a specific date from the local Reflect database",
+    description: "Get the daily note for a specific date.",
     parameters: z.object({
       date: z.string().describe("The date in YYYY-MM-DD format"),
-      graphId: z.string().default("rapheal-brain").describe("The graph ID to search in"),
+      graph_id: z.string().default("rapheal-brain").describe("The graph ID to search in"),
     }),
     execute: async (args) => {
-      const { date, graphId } = args;
+      const { date, graph_id } = args;
 
       try {
         const dbFile = resolvedDbPath;
@@ -201,7 +201,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           WHERE isDaily = 1 AND isDeleted = 0 AND graphId = ? AND dailyDate = ?
         `);
 
-        const result = stmt.get(graphId, dateMs) as any;
+        const result = stmt.get(graph_id, dateMs) as any;
         db.close();
 
         if (!result) {
@@ -209,7 +209,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
             content: [
               {
                 type: "text" as const,
-                text: JSON.stringify({ error: `No daily note found for ${date}`, date, graphId }),
+                text: JSON.stringify({ error: `No daily note found for ${date}`, date, graph_id }),
               },
             ],
           };
@@ -222,14 +222,14 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           editedAt: formatDate(result.editedAt),
           tags: result.tags ? JSON.parse(result.tags) : [],
           dailyDate: formatDate(result.dailyDate),
-          graphId: result.graphId,
+          graph_id: result.graph_id,
         };
 
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ date, graphId, dailyNote }, null, 2),
+              text: JSON.stringify({ date, graph_id, dailyNote }, null, 2),
             },
           ],
         };
@@ -249,14 +249,14 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
   // Tool: Get notes with most backlinks
   server.addTool({
     name: "get_backlinked_notes",
-    description: "Get notes that have at least a minimum number of backlinks from the local Reflect database",
+    description: "Get notes that have at least a minimum number of backlinks from Reflect.",
     parameters: z.object({
       minBacklinks: z.number().default(5).describe("Minimum number of backlinks a note must have"),
       limit: z.number().default(10).describe("Maximum number of notes to return"),
-      graphId: z.string().default("rapheal-brain").describe("The graph ID to search in"),
+      graph_id: z.string().default("rapheal-brain").describe("The graph ID to search in"),
     }),
     execute: async (args) => {
-      const { minBacklinks, limit, graphId } = args;
+      const { minBacklinks, limit, graph_id } = args;
 
       try {
         const dbFile = resolvedDbPath;
@@ -273,7 +273,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           LIMIT ?
         `);
 
-        const results = stmt.all(graphId, minBacklinks, limit) as any[];
+        const results = stmt.all(graph_id, minBacklinks, limit) as any[];
         db.close();
 
         const notes = results.map((row) => ({
@@ -287,7 +287,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ graphId, minBacklinks, count: notes.length, notes }, null, 2),
+              text: JSON.stringify({ graph_id, minBacklinks, count: notes.length, notes }, null, 2),
             },
           ],
         };
@@ -307,13 +307,13 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
   // Tool: Get all tags with usage counts
   server.addTool({
     name: "get_tags",
-    description: "Get all unique tags with their usage counts from the local Reflect database",
+    description: "Get all unique tags with their usage counts from Reflect.",
     parameters: z.object({
-      graphId: z.string().default("rapheal-brain").describe("The graph ID to search in"),
+      graph_id: z.string().default("rapheal-brain").describe("The graph ID to search in"),
       limit: z.number().default(50).describe("Maximum number of tags to return"),
     }),
     execute: async (args) => {
-      const { graphId, limit } = args;
+      const { graph_id, limit } = args;
 
       try {
         const dbFile = resolvedDbPath;
@@ -324,7 +324,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           WHERE isDeleted = 0 AND graphId = ? AND tags IS NOT NULL AND tags != '[]'
         `);
 
-        const rows = stmt.all(graphId) as any[];
+        const rows = stmt.all(graph_id) as any[];
         db.close();
 
         const tagCounts: Record<string, number> = {};
@@ -348,7 +348,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ graphId, totalTags: Object.keys(tagCounts).length, tags: sortedTags }, null, 2),
+              text: JSON.stringify({ graph_id, totalTags: Object.keys(tagCounts).length, tags: sortedTags }, null, 2),
             },
           ],
         };
@@ -368,14 +368,14 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
   // Tool: Get notes with a specific tag
   server.addTool({
     name: "get_notes_with_tag",
-    description: "Get notes that have a specific tag from the local Reflect database",
+    description: "Get notes that have a specific tag from Reflect.",
     parameters: z.object({
       tag: z.string().describe("The tag to search for"),
-      graphId: z.string().default("rapheal-brain").describe("The graph ID to search in"),
+      graph_id: z.string().default("rapheal-brain").describe("The graph ID to search in"),
       limit: z.number().default(20).describe("Maximum number of notes to return"),
     }),
     execute: async (args) => {
-      const { tag, graphId, limit } = args;
+      const { tag, graph_id, limit } = args;
 
       try {
         const dbFile = resolvedDbPath;
@@ -389,7 +389,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           LIMIT ?
         `);
 
-        const results = stmt.all(graphId, `%"${tag}"%`, limit) as any[];
+        const results = stmt.all(graph_id, `%"${tag}"%`, limit) as any[];
         db.close();
 
         const notes = results.map((row) => ({
@@ -405,7 +405,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ tag, graphId, count: notes.length, notes }, null, 2),
+              text: JSON.stringify({ tag, graph_id, count: notes.length, notes }, null, 2),
             },
           ],
         };
@@ -422,55 +422,129 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
     },
   });
 
-  // Tool: Get a note by title
+  // Tool: Get a note by title (exact match first, then fuzzy fallback)
   server.addTool({
     name: "get_note",
-    description: "Get a note by its title (subject) from the local Reflect database",
+    description: "Get a note by its title (subject) from Reflect.",
     parameters: z.object({
       title: z.string().describe("The title/subject of the note to retrieve"),
-      graphId: z.string().default("rapheal-brain").describe("The graph ID to search in"),
+      graph_id: z.string().default("rapheal-brain").describe("The graph ID to search in"),
     }),
     execute: async (args) => {
-      const { title, graphId } = args;
+      const { title, graph_id } = args;
+      const FUZZY_LIMIT = 3;
 
       try {
         const dbFile = resolvedDbPath;
         const db = new Database(dbFile, { readonly: true });
 
-        const stmt = db.prepare(`
+        // Try exact match first
+        const exactStmt = db.prepare(`
           SELECT id, subject, documentText, tags, editedAt, createdAt
           FROM notes 
           WHERE isDeleted = 0 AND graphId = ? AND subject = ?
         `);
+        const exactResult = exactStmt.get(graph_id, title) as any;
 
-        const result = stmt.get(graphId, title) as any;
-        db.close();
-
-        if (!result) {
+        if (exactResult) {
+          db.close();
+          const note = {
+            id: exactResult.id,
+            subject: exactResult.subject,
+            documentText: exactResult.documentText,
+            tags: exactResult.tags ? JSON.parse(exactResult.tags) : [],
+            editedAt: formatDate(exactResult.editedAt),
+            createdAt: formatDate(exactResult.createdAt),
+          };
           return {
             content: [
               {
                 type: "text" as const,
-                text: JSON.stringify({ error: `Note '${title}' not found`, title, graphId }),
+                  text: JSON.stringify({ title, graph_id, note }, null, 2),
               },
             ],
           };
         }
 
-        const note = {
+        // No exact match - try fuzzy search
+        const searchTerm = title.toLowerCase();
+        const fuzzyStmt = db.prepare(`
+          SELECT id, subject, documentText, tags, editedAt, createdAt,
+            CASE 
+              WHEN LOWER(subject) LIKE ? THEN 2
+              WHEN LOWER(subject) LIKE ? THEN 1
+              ELSE 0
+            END as relevance
+          FROM notes 
+          WHERE isDeleted = 0 
+            AND graphId = ? 
+            AND (LOWER(subject) LIKE ? OR LOWER(subject) LIKE ?)
+          ORDER BY relevance DESC, editedAt DESC
+          LIMIT ?
+        `);
+
+        const fuzzyResults = fuzzyStmt.all(
+          `${searchTerm}%`,     // starts with (score 2)
+          `%${searchTerm}%`,    // contains (score 1)
+          graph_id,
+          `${searchTerm}%`,     // WHERE starts with
+          `%${searchTerm}%`,    // WHERE contains
+          FUZZY_LIMIT
+        ) as any[];
+
+        db.close();
+
+        if (fuzzyResults.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ 
+                  error: `No notes found matching '${title}'`, 
+                  query: title, 
+                  graph_id 
+                }),
+              },
+            ],
+          };
+        }
+
+        const notes = fuzzyResults.map((result: any) => ({
           id: result.id,
           subject: result.subject,
           documentText: result.documentText,
           tags: result.tags ? JSON.parse(result.tags) : [],
           editedAt: formatDate(result.editedAt),
           createdAt: formatDate(result.createdAt),
-        };
+        }));
+
+        // If only one fuzzy match, return it directly
+        if (notes.length === 1) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ 
+                  query: title, 
+                  graph_id, 
+                  note: notes[0],
+                  matchType: "fuzzy" 
+                }, null, 2),
+              },
+            ],
+          };
+        }
 
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify({ title, graphId, note }, null, 2),
+              text: JSON.stringify({ 
+                query: title, 
+                graph_id, 
+                matchCount: notes.length,
+                notes 
+              }, null, 2),
             },
           ],
         };
