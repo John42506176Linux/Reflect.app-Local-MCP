@@ -1,6 +1,6 @@
 {
   "name": "reflect-mcp",
-  "version": "1.0.5",
+  "version": "1.0.7",
   "description": "MCP server for Reflect Notes - connect your notes to Claude Desktop. Just run: npx reflect-mcp",
   "type": "module",
   "main": "dist/server.js",

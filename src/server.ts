@@ -47,7 +47,12 @@ export async function startReflectMCPServer(config: ServerConfig): Promise<void>
       const authHeader = request.headers.authorization;
 
       if (!authHeader?.startsWith("Bearer ")) {
-        return undefined;
+        console.warn("[Auth] Missing or invalid Authorization header - triggering 401");
+        // Throw Response to trigger re-authentication (per FastMCP docs)
+        throw new Response(null, {
+          status: 401,
+          statusText: "Unauthorized - Bearer token required",
+        });
       }
 
       const token = authHeader.slice(7);
@@ -56,10 +61,16 @@ export async function startReflectMCPServer(config: ServerConfig): Promise<void>
         const tokenData = pkceProxy.loadUpstreamTokens(token);
         
         if (!tokenData) {
-          return undefined;
+          console.warn("[Auth] Token validation failed for:", token.slice(0, 8) + "... - triggering 401");
+          // Throw Response to trigger re-authentication (per FastMCP docs)
+          throw new Response(null, {
+            status: 401,
+            statusText: "Unauthorized - Invalid or expired token",
+          });
         }
 
         const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
+        console.log("[Auth] Token validated, expires in:", expiresIn, "seconds");
 
         return {
           accessToken: tokenData.accessToken,
@@ -67,8 +78,15 @@ export async function startReflectMCPServer(config: ServerConfig): Promise<void>
           expiresIn,
         };
       } catch (error) {
-        console.error("[Auth] Error:", error);
-        return undefined;
+        // Re-throw if it's already a Response (our auth failures above)
+        if (error instanceof Response) {
+          throw error;
+        }
+        console.error("[Auth] Error validating token:", error);
+        throw new Response(null, {
+          status: 401,
+          statusText: "Unauthorized - Token validation error",
+        });
       }
     },
     version: "1.0.0",

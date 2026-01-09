@@ -26,6 +26,18 @@ interface PKCETransaction {
   expiresAt: Date;
 }
 
+// Serializable version for file storage
+interface SerializedTransaction {
+  codeVerifier: string;
+  codeChallenge: string;
+  clientCallbackUrl: string;
+  clientId: string;
+  clientState: string;
+  scope: string[];
+  createdAt: string;
+  expiresAt: string;
+}
+
 export interface TokenData {
   accessToken: string;
   refreshToken?: string;
@@ -47,6 +59,7 @@ export interface PKCEOAuthProxyConfig {
   scopes: string[];
   redirectPath?: string;
   tokenStoragePath?: string; // Path to persist tokens (default: ~/.reflect-mcp-tokens.json)
+  transactionStoragePath?: string; // Path to persist transactions (default: ~/.reflect-mcp-transactions.json)
 }
 
 // ============================================================================
@@ -62,12 +75,15 @@ export class PKCEOAuthProxy {
     redirectPath: string;
     scopes: string[];
     tokenStoragePath: string;
+    transactionStoragePath: string;
   };
   
-  // In-memory storage for transactions (short-lived, don't need persistence)
+  // Transaction storage - now persisted to disk to survive restarts
   private transactions = new Map<string, PKCETransaction>();
   // Token storage - persisted to disk
   private tokens = new Map<string, TokenData>();
+  // Track tokens that have been exchanged but allow brief retry window
+  private recentlyExchangedCodes = new Map<string, { accessToken: string; expiresAt: Date }>();
   private cleanupInterval: NodeJS.Timeout | null = null;
 
   constructor(options: PKCEOAuthProxyConfig) {
@@ -79,8 +95,10 @@ export class PKCEOAuthProxy {
       redirectPath: options.redirectPath || "/oauth/callback",
       scopes: options.scopes,
       tokenStoragePath: options.tokenStoragePath || path.join(os.homedir(), ".reflect-mcp-tokens.json"),
+      transactionStoragePath: options.transactionStoragePath || path.join(os.homedir(), ".reflect-mcp-transactions.json"),
     };
     this.loadTokensFromDisk();
+    this.loadTransactionsFromDisk();
     this.startCleanup();
   }
 
@@ -123,6 +141,58 @@ export class PKCEOAuthProxy {
       fs.writeFileSync(this.config.tokenStoragePath, JSON.stringify(toStore, null, 2));
     } catch (error) {
       console.error("[PKCEProxy] Failed to save tokens to disk:", error);
+    }
+  }
+
+  // Load transactions from disk on startup (survives server restarts)
+  private loadTransactionsFromDisk(): void {
+    try {
+      if (fs.existsSync(this.config.transactionStoragePath)) {
+        const data = fs.readFileSync(this.config.transactionStoragePath, "utf-8");
+        const stored = JSON.parse(data) as Record<string, SerializedTransaction>;
+        
+        for (const [key, value] of Object.entries(stored)) {
+          const expiresAt = new Date(value.expiresAt);
+          // Only load non-expired transactions
+          if (expiresAt > new Date()) {
+            this.transactions.set(key, {
+              codeVerifier: value.codeVerifier,
+              codeChallenge: value.codeChallenge,
+              clientCallbackUrl: value.clientCallbackUrl,
+              clientId: value.clientId,
+              clientState: value.clientState,
+              scope: value.scope,
+              createdAt: new Date(value.createdAt),
+              expiresAt,
+            });
+          }
+        }
+        console.log(`[PKCEProxy] Loaded ${this.transactions.size} transactions from disk`);
+      }
+    } catch (error) {
+      console.warn("[PKCEProxy] Failed to load transactions from disk:", error);
+    }
+  }
+
+  // Save transactions to disk (survives server restarts)
+  private saveTransactionsToDisk(): void {
+    try {
+      const toStore: Record<string, SerializedTransaction> = {};
+      for (const [key, value] of this.transactions) {
+        toStore[key] = {
+          codeVerifier: value.codeVerifier,
+          codeChallenge: value.codeChallenge,
+          clientCallbackUrl: value.clientCallbackUrl,
+          clientId: value.clientId,
+          clientState: value.clientState,
+          scope: value.scope,
+          createdAt: value.createdAt.toISOString(),
+          expiresAt: value.expiresAt.toISOString(),
+        };
+      }
+      fs.writeFileSync(this.config.transactionStoragePath, JSON.stringify(toStore, null, 2));
+    } catch (error) {
+      console.error("[PKCEProxy] Failed to save transactions to disk:", error);
     }
   }
 
@@ -193,6 +263,7 @@ export class PKCEOAuthProxy {
       expiresAt: new Date(Date.now() + 600 * 1000), // 10 minutes
     };
     this.transactions.set(transactionId, transaction);
+    this.saveTransactionsToDisk(); // Persist to survive restarts
     console.log("[PKCEProxy] Created transaction:", transactionId);
 
     // Build upstream authorization URL
@@ -250,6 +321,8 @@ export class PKCEOAuthProxy {
 
     if (transaction.expiresAt < new Date()) {
       this.transactions.delete(state);
+      this.saveTransactionsToDisk();
+      console.error("[PKCEProxy] Transaction expired, created:", transaction.createdAt, "expired:", transaction.expiresAt);
       return new Response(JSON.stringify({ error: "transaction_expired" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
@@ -302,6 +375,7 @@ export class PKCEOAuthProxy {
 
     // Clean up transaction
     this.transactions.delete(state);
+    this.saveTransactionsToDisk();
 
     console.log("[PKCEProxy] Redirecting to client:", clientRedirect.toString());
     return new Response(null, {
@@ -326,26 +400,47 @@ export class PKCEOAuthProxy {
     refresh_token?: string;
     scope?: string;
   }> {
-    console.log("[PKCEProxy] exchangeAuthorizationCode called with code:", params.code?.slice(0, 8) + "...");
-
     if (!params.code) {
       throw new OAuthProxyError("invalid_request", "Missing authorization code", 400);
+    }
+
+    // Check if this code was recently exchanged (retry tolerance)
+    // This allows mcp-remote to retry if the first request timed out but actually succeeded
+    const recentExchange = this.recentlyExchangedCodes.get(params.code);
+    if (recentExchange && recentExchange.expiresAt > new Date()) {
+      console.log("[PKCEProxy] Returning cached token for retry of code:", params.code.slice(0, 8) + "...");
+      const tokenData = this.tokens.get(recentExchange.accessToken);
+      if (tokenData) {
+        const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
+        return {
+          access_token: recentExchange.accessToken,
+          token_type: "Bearer",
+          expires_in: expiresIn > 0 ? expiresIn : 3600,
+        };
+      }
     }
 
     const tokenData = this.tokens.get(params.code);
     if (!tokenData) {
       console.error("[PKCEProxy] Token not found for code:", params.code);
       console.error("[PKCEProxy] Available tokens:", Array.from(this.tokens.keys()).map(k => k.slice(0, 8) + "..."));
+      console.error("[PKCEProxy] Recently exchanged codes:", Array.from(this.recentlyExchangedCodes.keys()).map(k => k.slice(0, 8) + "..."));
       throw new OAuthProxyError("invalid_grant", "Invalid or expired authorization code", 400);
     }
 
-    // Remove the code (single use)
+    // Remove the code but keep track of it for retry tolerance (30 second window)
     this.tokens.delete(params.code);
 
     // Generate a new access token for the client
     const accessToken = this.generateId();
     this.tokens.set(accessToken, tokenData);
     this.saveTokensToDisk(); // Persist to disk
+
+    // Store the exchange for retry tolerance (30 seconds)
+    this.recentlyExchangedCodes.set(params.code, {
+      accessToken,
+      expiresAt: new Date(Date.now() + 30 * 1000),
+    });
 
     const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
     console.log("[PKCEProxy] Issuing access token, expires in:", expiresIn, "seconds");
@@ -403,11 +498,21 @@ export class PKCEOAuthProxy {
   // Load upstream tokens for a given proxy token
   loadUpstreamTokens(proxyToken: string): TokenData | null {
     const data = this.tokens.get(proxyToken);
-    if (!data) return null;
-    if (data.expiresAt < new Date()) {
+    if (!data) {
+      console.warn("[PKCEProxy] Token not found:", proxyToken.slice(0, 8) + "...");
+      console.warn("[PKCEProxy] Total tokens in store:", this.tokens.size);
+      return null;
+    }
+    const now = new Date();
+    if (data.expiresAt < now) {
+      console.warn("[PKCEProxy] Token expired:", proxyToken.slice(0, 8) + "...", "expired at:", data.expiresAt, "now:", now);
       this.tokens.delete(proxyToken);
       this.saveTokensToDisk();
       return null;
+    }
+    const timeRemaining = Math.floor((data.expiresAt.getTime() - now.getTime()) / 1000);
+    if (timeRemaining < 300) { // Less than 5 minutes remaining
+      console.warn("[PKCEProxy] Token expiring soon:", proxyToken.slice(0, 8) + "...", "remaining:", timeRemaining, "seconds");
     }
     return data;
   }
@@ -423,24 +528,38 @@ export class PKCEOAuthProxy {
     return null;
   }
 
-  // Cleanup expired transactions and tokens
+  // Cleanup expired transactions, tokens, and retry cache
   private startCleanup() {
     this.cleanupInterval = setInterval(() => {
       const now = new Date();
       let tokensChanged = false;
+      let transactionsChanged = false;
       
       for (const [id, tx] of this.transactions) {
-        if (tx.expiresAt < now) this.transactions.delete(id);
+        if (tx.expiresAt < now) {
+          this.transactions.delete(id);
+          transactionsChanged = true;
+        }
       }
       for (const [id, token] of this.tokens) {
         if (token.expiresAt < now) {
+          console.log("[PKCEProxy] Cleaning up expired token:", id.slice(0, 8) + "...");
           this.tokens.delete(id);
           tokensChanged = true;
+        }
+      }
+      // Clean up expired retry cache entries
+      for (const [code, data] of this.recentlyExchangedCodes) {
+        if (data.expiresAt < now) {
+          this.recentlyExchangedCodes.delete(code);
         }
       }
       
       if (tokensChanged) {
         this.saveTokensToDisk();
+      }
+      if (transactionsChanged) {
+        this.saveTransactionsToDisk();
       }
     }, 60000); // Every minute
   }
