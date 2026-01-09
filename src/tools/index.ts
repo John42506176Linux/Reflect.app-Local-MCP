@@ -561,6 +561,126 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
     },
   });
 
+  // Tool: Search notes by subject (fuzzy search with multi-word support)
+  server.addTool({
+    name: "search_notes",
+    description: "Search for notes by subject/title using fuzzy matching. Returns notes whose subjects match the search query.",
+    parameters: z.object({
+      query: z.string().describe("The search query to match against note subjects"),
+      graph_id: z.string().default("rapheal-brain").describe("The graph ID to search in"),
+      limit: z.number().default(10).describe("Maximum number of notes to return"),
+      include_content: z.boolean().default(false).describe("Whether to search in note content as well as subjects"),
+    }),
+    execute: async (args) => {
+      const { query, graph_id, limit, include_content } = args;
+
+      try {
+        const dbFile = resolvedDbPath;
+        const db = new Database(dbFile, { readonly: true });
+
+        // Split query into terms, treating dots, dashes, underscores as word separators
+        // Filter out empty strings and very short terms
+        const searchTerms = query
+          .toLowerCase()
+          .split(/[\s.,\-_\/\\]+/)
+          .filter(term => term.length >= 2);
+
+        if (searchTerms.length === 0) {
+          db.close();
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ error: "Search query too short or empty", query }),
+              },
+            ],
+          };
+        }
+
+        // Build dynamic WHERE clause - notes must contain ALL search terms
+        // in either subject or content (if include_content is true)
+        const whereConditions: string[] = [];
+        const params: any[] = [];
+
+        for (const term of searchTerms) {
+          if (include_content) {
+            whereConditions.push(`(LOWER(subject) LIKE ? OR LOWER(documentText) LIKE ?)`);
+            params.push(`%${term}%`, `%${term}%`);
+          } else {
+            whereConditions.push(`LOWER(subject) LIKE ?`);
+            params.push(`%${term}%`);
+          }
+        }
+
+        // Build relevance scoring - higher score for more matches in subject
+        const relevanceParts: string[] = [];
+        for (const term of searchTerms) {
+          relevanceParts.push(`CASE WHEN LOWER(subject) LIKE '%${term}%' THEN 20 ELSE 0 END`);
+          if (include_content) {
+            relevanceParts.push(`CASE WHEN LOWER(documentText) LIKE '%${term}%' THEN 5 ELSE 0 END`);
+          }
+        }
+        // Bonus for exact phrase match
+        const fullQuery = query.toLowerCase();
+        relevanceParts.push(`CASE WHEN LOWER(subject) = '${fullQuery}' THEN 100 ELSE 0 END`);
+        relevanceParts.push(`CASE WHEN LOWER(subject) LIKE '${fullQuery}%' THEN 50 ELSE 0 END`);
+        relevanceParts.push(`CASE WHEN LOWER(subject) LIKE '%${fullQuery}%' THEN 30 ELSE 0 END`);
+
+        const relevanceExpr = relevanceParts.join(' + ');
+
+        const sql = `
+          SELECT id, subject, documentText, tags, editedAt, createdAt, isDaily,
+            (${relevanceExpr}) as relevance
+          FROM notes 
+          WHERE isDeleted = 0 
+            AND graphId = ?
+            AND (${whereConditions.join(' AND ')})
+          ORDER BY relevance DESC, editedAt DESC
+          LIMIT ?
+        `;
+
+        const stmt = db.prepare(sql);
+        const results = stmt.all(graph_id, ...params, limit) as any[];
+        db.close();
+
+        const notes = results.map((row: any) => ({
+          id: row.id,
+          subject: row.subject,
+          preview: row.documentText?.slice(0, 200) || "",
+          tags: row.tags ? JSON.parse(row.tags) : [],
+          editedAt: formatDate(row.editedAt),
+          isDaily: row.isDaily === 1,
+          relevance: row.relevance,
+        }));
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ 
+                query, 
+                searchTerms,
+                graph_id, 
+                searchedContent: include_content,
+                count: notes.length, 
+                notes 
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (e) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ error: String(e) }),
+            },
+          ],
+        };
+      }
+    },
+  });
+
   // Tool: Create a new note in Reflect via API
   server.addTool({
     name: "create_note",
