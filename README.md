@@ -37,11 +37,15 @@ npx reflect-mcp install
   "mcpServers": {
     "reflect": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://localhost:3000/mcp"]
+      "args": ["-y", "mcp-remote", "--port", "4209", "http://localhost:3000/mcp"]
     }
   }
 }
 ```
+
+> **Important:** 
+> - Make sure the port number (`3000` in the example above) matches the port you used when installing the server. If you installed with a custom port using `--port`, use that port number instead.
+> - Add `"--port", "4209"` (use a **different port number for each MCP client** - e.g., `"4210"`, `"4211"`, etc.) to avoid port conflicts. Each MCP client needs a unique port.
 
 **4. Restart Claude Desktop**
 

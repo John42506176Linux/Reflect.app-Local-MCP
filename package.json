@@ -39,7 +39,7 @@
     "@modelcontextprotocol/sdk": "^1.25.1",
     "better-sqlite3": "^11.10.0",
     "fastmcp": "^3.25.4",
-    "reflect-mcp": "^1.0.10",
+    "reflect-mcp": "^1.0.11",
     "zod": "^4.1.13"
   },
   "devDependencies": {

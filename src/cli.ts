@@ -207,10 +207,12 @@ async function install(installArgs: string[]): Promise<void> {
   "mcpServers": {
     "reflect": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://localhost:${port}/mcp"]
+      "args": ["-y", "mcp-remote", "--port", "4209", "http://localhost:${port}/mcp"]
     }
   }
 }`);
+  console.log(`   Note: Make sure the port (${port}) matches the port you used when installing the server.`);
+  console.log(`   Important: Add "--port", "4209" (or a different port like "4210", "4211", etc.) to avoid conflicts if you have multiple MCP clients running.`);
 }
 
 function uninstall(): void {
