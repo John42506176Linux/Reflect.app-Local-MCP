@@ -684,13 +684,13 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
   // Tool: Create a new note in Reflect via API
   server.addTool({
     name: "create_note",
-    description: "Create a new note in Reflect. Must add the tasks field if there are any actionable items to add. Pass in the user's timezone to ensure the note is created with the correct date. Check what tags the user has already created, and determine which tag to use for this content, or create a new tag if no tags fit the content.",
+    description: "Create a new note in Reflect. Must add the tasks field if there are any actionable items to add. Pass in the user's timezone to ensure the note is created with the correct date. The backlink_note parameter creates a backlink to another note (e.g., 'Project Planning' creates [[Project Planning]]). For actual tags, use get_tags to see available tags and add them separately if needed.",
     parameters: z.object({
       subject: z.string().describe("The title/subject of the note. Example: 'Meeting Summary - Project Planning'"),
       content: z.string().describe("The markdown content for the note. This is the main body of the note."),
       graph_id: z.string().describe("The unique identifier of the Reflect graph where the note should be created."),
       timezone: z.string().describe("The user's timezone in IANA format. Example: 'America/New_York', 'Europe/London', 'Asia/Tokyo'. Used to determine the correct date for the daily note backlink."),
-      tag: z.string().describe("The tag to add to the note. Example: 'personal'"),
+      backlink_note: z.string().describe("The name of an existing note to backlink to. This creates a backlink [[backlink_note]] in the new note. Example: 'Project Planning' creates [[Project Planning]]. This is NOT a tag - use get_tags for actual tags."),
       tasks: z.array(z.string()).optional().describe("A list of tasks to add to the note. Must add this field if there are any actionable items. Example: ['Review PR', 'Schedule meeting']"),
     }),
     execute: async (args, { session }) => {
@@ -706,13 +706,13 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
       }
 
       const { accessToken } = session as { accessToken: string };
-      const { subject, content, graph_id, timezone, tag, tasks } = args;
+      const { subject, content, graph_id, timezone, backlink_note, tasks } = args;
 
       const todayDate = getDateForTimezone(timezone);
 
       const contentParts: string[] = [];
       contentParts.push(`#ai-generated\n`);
-      contentParts.push(`- [[${tag}]]\n`);
+      contentParts.push(`- [[${backlink_note}]]\n`);
       
       const contentLines = content.split('\n');
       const indentedContent = contentLines.map(line => `  ${line}`).join('\n');
@@ -758,7 +758,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
             date: todayDate,
             text: `[[${subject}]]`,
             transform_type: "list-append",
-            list_name: `[[${tag}]]`,
+            list_name: `[[${backlink_note}]]`,
           }),
         });
         
@@ -767,7 +767,7 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
           console.error(`Failed to append to daily notes: ${dailyNoteResponse.status}, ${errorText}`);
         }
         
-        const message = `Note "${subject}" created with tag [[${tag}]]${tasks?.length ? ` and ${tasks.length} task(s)` : ''} and linked in daily notes`;
+        const message = `Note "${subject}" created with backlink to [[${backlink_note}]]${tasks?.length ? ` and ${tasks.length} task(s)` : ''} and linked in daily notes`;
         
         return {
           content: [

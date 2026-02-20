@@ -11,7 +11,64 @@ import { DEFAULT_DB_PATH, expandPath } from "./utils.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import * as net from "net";
 import { execSync } from "child_process";
+
+/**
+ * Check if a port is in use
+ */
+function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+    server.once("listening", () => {
+      server.close();
+      resolve(false);
+    });
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+/**
+ * Kill any process using the specified port
+ */
+function killProcessOnPort(port: number): boolean {
+  try {
+    // Get PID(s) using the port
+    const pids = execSync(`lsof -ti:${port}`, { encoding: "utf-8" }).trim();
+    if (pids) {
+      console.log(`⚠️  Port ${port} in use by PID(s): ${pids.replace(/\n/g, ", ")}`);
+      execSync(`lsof -ti:${port} | xargs kill -9`, { stdio: "ignore" });
+      console.log(`✅ Killed existing process(es) on port ${port}`);
+      return true;
+    }
+  } catch {
+    // No process found on port, or kill failed - that's fine
+  }
+  return false;
+}
+
+/**
+ * Ensure the port is free, killing any existing process if needed
+ */
+async function ensurePortFree(port: number): Promise<void> {
+  if (await isPortInUse(port)) {
+    killProcessOnPort(port);
+    // Wait a moment for the port to be released
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    
+    // Check again
+    if (await isPortInUse(port)) {
+      throw new Error(`Port ${port} is still in use after attempting to free it`);
+    }
+  }
+}
 
 const REFLECT_CLIENT_ID = "55798f25d5a24efb95e4174fff3d219e";
 const LAUNCH_AGENT_LABEL = "com.reflect-mcp";
@@ -23,18 +80,20 @@ const args = process.argv.slice(2);
 const command = args[0];
 
 // Handle commands
-if (command === "install") {
-  install(args.slice(1));
-} else if (command === "uninstall") {
-  uninstall();
-} else if (command === "status") {
-  status();
-} else if (command === "--help" || command === "-h") {
-  showHelp();
-} else {
-  // Default: run the server
-  runServer(args);
-}
+(async () => {
+  if (command === "install") {
+    await install(args.slice(1));
+  } else if (command === "uninstall") {
+    uninstall();
+  } else if (command === "status") {
+    status();
+  } else if (command === "--help" || command === "-h") {
+    showHelp();
+  } else {
+    // Default: run the server
+    await runServer(args);
+  }
+})();
 
 function showHelp(): void {
   console.log(`
@@ -62,7 +121,7 @@ Examples:
   process.exit(0);
 }
 
-function install(installArgs: string[]): void {
+async function install(installArgs: string[]): Promise<void> {
   let dbPath = DEFAULT_DB_PATH;
   let port = 3000;
 
@@ -93,6 +152,10 @@ function install(installArgs: string[]): void {
   } catch {
     // Ignore errors - service might not exist yet
   }
+
+  // Kill any stale processes on the port
+  killProcessOnPort(port);
+  await new Promise((resolve) => setTimeout(resolve, 300));
 
   // Create plist content
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -203,7 +266,7 @@ function status(): void {
   console.log(`\n📝 Logs: tail -f /tmp/reflect-mcp.log`);
 }
 
-function runServer(serverArgs: string[]): void {
+async function runServer(serverArgs: string[]): Promise<void> {
   let dbPath = DEFAULT_DB_PATH;
   let port = 3000;
 
@@ -215,15 +278,24 @@ function runServer(serverArgs: string[]): void {
     }
   }
 
-  startReflectMCPServer({
-    clientId: REFLECT_CLIENT_ID,
-    port,
-    dbPath,
-  }).then(() => {
+  // Ensure port is free before starting
+  try {
+    await ensurePortFree(port);
+  } catch (err) {
+    console.error(`❌ ${err}`);
+    process.exit(1);
+  }
+
+  try {
+    await startReflectMCPServer({
+      clientId: REFLECT_CLIENT_ID,
+      port,
+      dbPath,
+    });
     console.log(`Reflect MCP Server running on http://localhost:${port}`);
     console.log(`Database: ${dbPath}`);
-  }).catch((err) => {
+  } catch (err) {
     console.error("Failed to start server:", err);
     process.exit(1);
-  });
+  }
 }
