@@ -1,6 +1,9 @@
 /**
  * Reflect MCP Server Factory
  * 
+ * Updated by Twice 🦸‍♂️
+ * Now handling multiple concurrent clients!
+ * 
  * Creates and configures the FastMCP server with PKCE OAuth
  */
 
@@ -58,7 +61,7 @@ export async function startReflectMCPServer(config: ServerConfig): Promise<void>
       const token = authHeader.slice(7);
 
       try {
-        const tokenData = pkceProxy.loadUpstreamTokens(token);
+        const tokenData = await pkceProxy.loadUpstreamTokens(token);
         
         if (!tokenData) {
           console.warn("[Auth] Token validation failed for:", token.slice(0, 8) + "... - triggering 401");

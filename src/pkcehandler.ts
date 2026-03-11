@@ -1,6 +1,9 @@
 /**
  * PKCE OAuth Proxy (No Client Secret Required)
  * 
+ * Updated by Twice 🦸‍♂️
+ * Cloning capabilities enabled for multiple MCP clients
+ * 
  * This module provides a custom OAuth proxy that uses PKCE for authentication
  * without requiring a client secret, suitable for public clients.
  */
@@ -10,6 +13,61 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { OAuthProxyError } from "fastmcp/auth";
+
+// ============================================================================
+// Write Queue - Prevents concurrent file I/O operations
+// ============================================================================
+
+/**
+ * Simple in-memory write queue that batches and serializes file writes.
+ * This prevents race conditions when multiple clients trigger disk writes simultaneously.
+ */
+class WriteQueue {
+  private queue: Array<() => Promise<void>> = [];
+  private isProcessing = false;
+
+  /**
+   * Add a write operation to the queue and wait for it to complete
+   */
+  async add(writeOperation: () => Promise<void>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const operation = async () => {
+        try {
+          await writeOperation();
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      };
+      this.queue.push(operation);
+      this.processQueue();
+    });
+  }
+
+  /**
+   * Process the queue one operation at a time
+   */
+  private async processQueue(): Promise<void> {
+    if (this.isProcessing || this.queue.length === 0) {
+      return;
+    }
+
+    this.isProcessing = true;
+    const operation = this.queue.shift()!;
+
+    try {
+      await operation();
+    } finally {
+      this.isProcessing = false;
+      // Small delay to batch rapid writes together
+      await new Promise(resolve => setTimeout(resolve, 10));
+      this.processQueue();
+    }
+  }
+}
+
+// Global write queue instance shared across all PKCEProxy instances
+const globalWriteQueue = new WriteQueue();
 
 // ============================================================================
 // Types
@@ -85,6 +143,14 @@ export class PKCEOAuthProxy {
   // Track tokens that have been exchanged but allow brief retry window
   private recentlyExchangedCodes = new Map<string, { accessToken: string; expiresAt: Date }>();
   private cleanupInterval: NodeJS.Timeout | null = null;
+  
+  // In-memory mutex to prevent race conditions during token operations
+  // This ensures only one client can exchange a code at a time
+  private tokenMutex: Map<string, Promise<void>> = new Map();
+  private tokenMutexBusy = false;
+  
+  // Active connections counter for debugging
+  private activeConnections = 0;
 
   constructor(options: PKCEOAuthProxyConfig) {
     this.config = {
@@ -127,8 +193,9 @@ export class PKCEOAuthProxy {
     }
   }
 
-  // Save tokens to disk
-  private saveTokensToDisk(): void {
+  // Save tokens to disk - ASYNC with write queue
+  // This prevents blocking the event loop and prevents race conditions
+  private async saveTokensToDisk(): Promise<void> {
     try {
       const toStore: Record<string, SerializedTokenData> = {};
       for (const [key, value] of this.tokens) {
@@ -138,7 +205,17 @@ export class PKCEOAuthProxy {
           expiresAt: value.expiresAt.toISOString(),
         };
       }
-      fs.writeFileSync(this.config.tokenStoragePath, JSON.stringify(toStore, null, 2));
+      
+      // Use the global write queue to serialize this write operation
+      await globalWriteQueue.add(async () => {
+        await fs.promises.writeFile(
+          this.config.tokenStoragePath, 
+          JSON.stringify(toStore, null, 2),
+          "utf-8"
+        );
+      });
+      
+      console.log(`[PKCEProxy] Saved ${toStore.length} tokens to disk`);
     } catch (error) {
       console.error("[PKCEProxy] Failed to save tokens to disk:", error);
     }
@@ -174,8 +251,8 @@ export class PKCEOAuthProxy {
     }
   }
 
-  // Save transactions to disk (survives server restarts)
-  private saveTransactionsToDisk(): void {
+  // Save transactions to disk (survives server restarts) - ASYNC with write queue
+  private async saveTransactionsToDisk(): Promise<void> {
     try {
       const toStore: Record<string, SerializedTransaction> = {};
       for (const [key, value] of this.transactions) {
@@ -190,7 +267,17 @@ export class PKCEOAuthProxy {
           expiresAt: value.expiresAt.toISOString(),
         };
       }
-      fs.writeFileSync(this.config.transactionStoragePath, JSON.stringify(toStore, null, 2));
+      
+      // Use the global write queue to serialize this write operation
+      await globalWriteQueue.add(async () => {
+        await fs.promises.writeFile(
+          this.config.transactionStoragePath, 
+          JSON.stringify(toStore, null, 2),
+          "utf-8"
+        );
+      });
+      
+      console.log(`[PKCEProxy] Saved ${toStore.length} transactions to disk`);
     } catch (error) {
       console.error("[PKCEProxy] Failed to save transactions to disk:", error);
     }
@@ -263,7 +350,7 @@ export class PKCEOAuthProxy {
       expiresAt: new Date(Date.now() + 600 * 1000), // 10 minutes
     };
     this.transactions.set(transactionId, transaction);
-    this.saveTransactionsToDisk(); // Persist to survive restarts
+    await this.saveTransactionsToDisk(); // Persist to survive restarts (async now)
     console.log("[PKCEProxy] Created transaction:", transactionId);
 
     // Build upstream authorization URL
@@ -321,7 +408,7 @@ export class PKCEOAuthProxy {
 
     if (transaction.expiresAt < new Date()) {
       this.transactions.delete(state);
-      this.saveTransactionsToDisk();
+      await this.saveTransactionsToDisk();
       console.error("[PKCEProxy] Transaction expired, created:", transaction.createdAt, "expired:", transaction.expiresAt);
       return new Response(JSON.stringify({ error: "transaction_expired" }), {
         status: 400,
@@ -366,7 +453,7 @@ export class PKCEOAuthProxy {
       refreshToken: tokens.refresh_token,
       expiresAt: new Date(Date.now() + (tokens.expires_in || 3600) * 1000),
     });
-    this.saveTokensToDisk(); // Persist to disk
+    await this.saveTokensToDisk(); // Persist to disk (async now)
 
     // Redirect back to client with our proxy token
     const clientRedirect = new URL(transaction.clientCallbackUrl);
@@ -375,7 +462,7 @@ export class PKCEOAuthProxy {
 
     // Clean up transaction
     this.transactions.delete(state);
-    this.saveTransactionsToDisk();
+    await this.saveTransactionsToDisk();
 
     console.log("[PKCEProxy] Redirecting to client:", clientRedirect.toString());
     return new Response(null, {
@@ -404,11 +491,13 @@ export class PKCEOAuthProxy {
       throw new OAuthProxyError("invalid_request", "Missing authorization code", 400);
     }
 
+    console.log(`[PKCEProxy] Exchange requested for code: ${params.code.slice(0, 8)}... (connections: ${this.activeConnections})`);
+
     // Check if this code was recently exchanged (retry tolerance)
     // This allows mcp-remote to retry if the first request timed out but actually succeeded
     const recentExchange = this.recentlyExchangedCodes.get(params.code);
     if (recentExchange && recentExchange.expiresAt > new Date()) {
-      console.log("[PKCEProxy] Returning cached token for retry of code:", params.code.slice(0, 8) + "...");
+      console.log(`[PKCEProxy] Returning cached token for retry of code: ${params.code.slice(0, 8)}...`);
       const tokenData = this.tokens.get(recentExchange.accessToken);
       if (tokenData) {
         const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
@@ -420,38 +509,94 @@ export class PKCEOAuthProxy {
       }
     }
 
-    const tokenData = this.tokens.get(params.code);
-    if (!tokenData) {
-      console.error("[PKCEProxy] Token not found for code:", params.code);
-      console.error("[PKCEProxy] Available tokens:", Array.from(this.tokens.keys()).map(k => k.slice(0, 8) + "..."));
-      console.error("[PKCEProxy] Recently exchanged codes:", Array.from(this.recentlyExchangedCodes.keys()).map(k => k.slice(0, 8) + "..."));
-      throw new OAuthProxyError("invalid_grant", "Invalid or expired authorization code", 400);
-    }
-
-    // Remove the code but keep track of it for retry tolerance (30 second window)
-    this.tokens.delete(params.code);
-
-    // Generate a new access token for the client
-    const accessToken = this.generateId();
-    this.tokens.set(accessToken, tokenData);
-    this.saveTokensToDisk(); // Persist to disk
-
-    // Store the exchange for retry tolerance (30 seconds)
-    this.recentlyExchangedCodes.set(params.code, {
-      accessToken,
-      expiresAt: new Date(Date.now() + 30 * 1000),
-    });
-
-    const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
-    console.log("[PKCEProxy] Issuing access token, expires in:", expiresIn, "seconds");
-
-    return {
-      access_token: accessToken,
-      token_type: "Bearer",
-      expires_in: expiresIn > 0 ? expiresIn : 3600,
-      // Note: Not returning refresh_token since Reflect doesn't support refresh_token grant
-      // This tells the MCP client to re-authenticate via OAuth when the token expires
+    // Acquire mutex for this specific code to prevent race conditions
+    // This ensures only ONE client can exchange a given code at a time
+    let releaseMutex: (() => void) | undefined;
+    const acquireMutex = async (): Promise<void> => {
+      const codeKey = `code_${params.code}`;
+      while (this.tokenMutex.has(codeKey)) {
+        // Wait for the current exchange to complete
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      
+      // Create a pending promise to indicate we're acquiring the lock
+      const pending = new Promise<void>(resolve => {
+        releaseMutex = resolve;
+        this.tokenMutex.set(codeKey, Promise.resolve());
+      });
+      
+      // Check if we got the lock before another concurrent request took it
+      if (this.tokenMutex.get(codeKey) !== pending) {
+        this.tokenMutex.delete(codeKey);
+        return acquireMutex(); // Try again
+      }
+      
+      await pending;
     };
+
+    const releaseMutexForCode = (code: string) => {
+      const codeKey = `code_${code}`;
+      this.tokenMutex.delete(codeKey);
+    };
+
+    try {
+      await acquireMutex();
+      
+      // Check again after acquiring mutex - another request might have already processed this code
+      const cachedExchange = this.recentlyExchangedCodes.get(params.code);
+      if (cachedExchange && cachedExchange.expiresAt > new Date()) {
+        const cachedTokenData = this.tokens.get(cachedExchange.accessToken);
+        if (cachedTokenData) {
+          const expiresIn = Math.floor((cachedTokenData.expiresAt.getTime() - Date.now()) / 1000);
+          return {
+            access_token: cachedExchange.accessToken,
+            token_type: "Bearer",
+            expires_in: expiresIn > 0 ? expiresIn : 3600,
+          };
+        }
+      }
+
+      const tokenData = this.tokens.get(params.code);
+      if (!tokenData) {
+        console.error(`[PKCEProxy] Token not found for code: ${params.code}`);
+        console.error(`[PKCEProxy] Available tokens:`, Array.from(this.tokens.keys()).map(k => k.slice(0, 8) + "..."));
+        console.error(`[PKCEProxy] Recently exchanged codes:`, Array.from(this.recentlyExchangedCodes.keys()).map(k => k.slice(0, 8) + "..."));
+        throw new OAuthProxyError("invalid_grant", "Invalid or expired authorization code", 400);
+      }
+
+      // Remove the code but keep track of it for retry tolerance (30 second window)
+      // Mark as exchanged BEFORE saving to disk to prevent race conditions
+      this.tokens.delete(params.code);
+
+      // Generate a new access token for the client
+      const accessToken = this.generateId();
+      this.tokens.set(accessToken, tokenData);
+      
+      // Store the exchange for retry tolerance (30 seconds) - mark as exchanged
+      this.recentlyExchangedCodes.set(params.code, {
+        accessToken,
+        expiresAt: new Date(Date.now() + 30 * 1000),
+      });
+
+      // Now save to disk - this is the only write operation during the critical section
+      await this.saveTokensToDisk();
+
+      const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
+      console.log(`[PKCEProxy] Issued access token (expires in ${expiresIn}s) for code: ${params.code.slice(0, 8)}...`);
+
+      return {
+        access_token: accessToken,
+        token_type: "Bearer",
+        expires_in: expiresIn > 0 ? expiresIn : 3600,
+        // Note: Not returning refresh_token since Reflect doesn't support refresh_token grant
+        // This tells the MCP client to re-authenticate via OAuth when the token expires
+      };
+    } catch (error) {
+      throw error;
+    } finally {
+      // Release the mutex
+      releaseMutexForCode(params.code);
+    }
   }
 
   // Handle refresh token exchange
@@ -496,7 +641,7 @@ export class PKCEOAuthProxy {
   }
 
   // Load upstream tokens for a given proxy token
-  loadUpstreamTokens(proxyToken: string): TokenData | null {
+  async loadUpstreamTokens(proxyToken: string): Promise<TokenData | null> {
     const data = this.tokens.get(proxyToken);
     if (!data) {
       console.warn("[PKCEProxy] Token not found:", proxyToken.slice(0, 8) + "...");
@@ -507,7 +652,7 @@ export class PKCEOAuthProxy {
     if (data.expiresAt < now) {
       console.warn("[PKCEProxy] Token expired:", proxyToken.slice(0, 8) + "...", "expired at:", data.expiresAt, "now:", now);
       this.tokens.delete(proxyToken);
-      this.saveTokensToDisk();
+      await this.saveTokensToDisk();
       return null;
     }
     const timeRemaining = Math.floor((data.expiresAt.getTime() - now.getTime()) / 1000);
@@ -529,8 +674,8 @@ export class PKCEOAuthProxy {
   }
 
   // Cleanup expired transactions, tokens, and retry cache
-  private startCleanup() {
-    this.cleanupInterval = setInterval(() => {
+  private async startCleanup(): Promise<void> {
+    const cleanup = async () => {
       const now = new Date();
       let tokensChanged = false;
       let transactionsChanged = false;
@@ -556,15 +701,19 @@ export class PKCEOAuthProxy {
       }
       
       if (tokensChanged) {
-        this.saveTokensToDisk();
+        await this.saveTokensToDisk();
       }
       if (transactionsChanged) {
-        this.saveTransactionsToDisk();
+        await this.saveTransactionsToDisk();
       }
-    }, 60000); // Every minute
+    };
+
+    this.cleanupInterval = setInterval(cleanup, 60000); // Every minute
+    // Run cleanup immediately on startup
+    await cleanup();
   }
 
-  destroy() {
+  destroy(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
