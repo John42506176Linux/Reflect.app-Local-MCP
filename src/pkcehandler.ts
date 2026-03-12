@@ -329,6 +329,26 @@ export class PKCEOAuthProxy {
       });
     }
 
+    // If we already have a valid token, skip the full OAuth dance.
+    // Issue a proxy code immediately so subsequent clients never need a browser.
+    const existingToken = this.getFirstValidToken();
+    if (existingToken) {
+      console.log("[PKCEProxy] Valid token exists — issuing proxy code directly (skipping OAuth)");
+      const proxyCode = this.generateId();
+      this.tokens.set(proxyCode, { ...existingToken });
+      await this.saveTokensToDisk();
+
+      const clientRedirect = new URL(params.redirect_uri);
+      clientRedirect.searchParams.set("code", proxyCode);
+      clientRedirect.searchParams.set("state", params.state || "");
+
+      console.log("[PKCEProxy] Redirecting client directly to:", clientRedirect.toString());
+      return new Response(null, {
+        status: 302,
+        headers: { Location: clientRedirect.toString() },
+      });
+    }
+
     // Generate our own PKCE for upstream
     const pkce = this.generatePKCE();
     const transactionId = this.generateId();
