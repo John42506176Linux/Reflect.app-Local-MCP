@@ -1,6 +1,9 @@
 /**
  * Reflect MCP Server Factory
  * 
+ * Updated by Twice 🦸‍♂️
+ * Now handling multiple concurrent clients!
+ * 
  * Creates and configures the FastMCP server with PKCE OAuth
  */
 
@@ -58,8 +61,8 @@ export async function startReflectMCPServer(config: ServerConfig): Promise<void>
       const token = authHeader.slice(7);
 
       try {
-        const tokenData = pkceProxy.loadUpstreamTokens(token);
-        
+        const tokenData = await pkceProxy.loadUpstreamTokens(token);
+
         if (!tokenData) {
           console.warn("[Auth] Token validation failed for:", token.slice(0, 8) + "... - triggering 401");
           // Throw Response to trigger re-authentication (per FastMCP docs)
@@ -97,11 +100,53 @@ export async function startReflectMCPServer(config: ServerConfig): Promise<void>
 
   // Start server
   await server.start({
-    httpStream: { 
+    httpStream: {
       port,
     },
     transportType: "httpStream",
   });
+}
+
+/**
+ * Start the Reflect MCP server in stdio mode.
+ * Used when an HTTP server is already running on the port (e.g. a second MCP client).
+ * Reads the cached OAuth token from disk instead of running the full OAuth flow.
+ */
+export async function startReflectMCPServerStdio(config: ServerConfig): Promise<void> {
+  const port = config.port || 3000;
+  const baseUrl = `http://localhost:${port}`;
+
+  // Instantiate proxy only to read tokens from disk — no HTTP server needed
+  const pkceProxy = new PKCEOAuthProxy({
+    baseUrl,
+    clientId: config.clientId,
+    authorizationEndpoint: "https://reflect.app/oauth",
+    tokenEndpoint: "https://reflect.app/api/oauth/token",
+    scopes: ["read:graph", "write:graph"],
+  });
+
+  const server = new FastMCP({
+    name: "Reflect MCP Server",
+    // For stdio, FastMCP calls authenticate(undefined). We load the token from disk.
+    authenticate: async (_request) => {
+      const tokenData = pkceProxy.getFirstValidToken();
+      if (!tokenData) {
+        console.error("[Auth] No valid token on disk. Connect via HTTP mode first to complete OAuth.");
+        throw new Error("No valid token. Please authenticate via HTTP mode first.");
+      }
+      const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
+      console.error("[Auth] Stdio mode: token loaded from disk, expires in:", expiresIn, "seconds");
+      return {
+        accessToken: tokenData.accessToken,
+        expiresIn,
+      };
+    },
+    version: "1.0.0",
+  });
+
+  registerTools(server, config.dbPath);
+
+  await server.start({ transportType: "stdio" });
 }
 
 // Also export for programmatic use
