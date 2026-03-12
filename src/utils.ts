@@ -6,8 +6,10 @@ import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
 
-// Base path for Reflect local database
-const REFLECT_BASE_PATH = "~/Library/Application Support/Reflect/File System";
+// Base path for Reflect local database (macOS only; no known Linux path)
+const REFLECT_BASE_PATH = os.platform() === "darwin"
+  ? "~/Library/Application Support/Reflect/File System"
+  : null;
 
 /**
  * Expands ~ to the user's home directory
@@ -20,10 +22,15 @@ export function expandPath(filePath: string): string {
 }
 
 /**
- * Searches for the Reflect local database file
- * Returns the first valid database path found, or null if not found
+ * Searches for the Reflect local database file.
+ * Only works on macOS where the Reflect app path is known.
+ * Returns the first valid database path found, or null if not found.
  */
 export function findLocalDatabase(): string | null {
+  if (!REFLECT_BASE_PATH) {
+    return null;
+  }
+
   const basePath = expandPath(REFLECT_BASE_PATH);
   
   if (!fs.existsSync(basePath)) {
@@ -82,15 +89,18 @@ export function findLocalDatabase(): string | null {
 }
 
 /**
- * Gets the default database path, searching for it if not provided
+ * Gets the default database path, searching for it if not provided.
+ * Returns empty string on non-macOS platforms where no default is known.
  */
 export function getDefaultDbPath(): string {
   const found = findLocalDatabase();
   if (found) {
     return found;
   }
-  // Fallback to a common path pattern
-  return expandPath("~/Library/Application Support/Reflect/File System/000/t/00/00000000");
+  if (os.platform() === "darwin") {
+    return expandPath("~/Library/Application Support/Reflect/File System/000/t/00/00000000");
+  }
+  return "";
 }
 
 // For backwards compatibility
