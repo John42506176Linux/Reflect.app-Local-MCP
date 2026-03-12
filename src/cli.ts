@@ -36,39 +36,22 @@ function isPortInUse(port: number): Promise<boolean> {
 }
 
 /**
- * Kill any process using the specified port
+ * Find a free port starting from startPort.
+ * Returns the first available port within maxAttempts tries,
+ * or throws if none is found.
  */
-function killProcessOnPort(port: number): boolean {
-  try {
-    // Get PID(s) using the port
-    const pids = execSync(`lsof -ti:${port}`, { encoding: "utf-8" }).trim();
-    if (pids) {
-      console.log(`⚠️  Port ${port} in use by PID(s): ${pids.replace(/\n/g, ", ")}`);
-      execSync(`lsof -ti:${port} | xargs kill -9`, { stdio: "ignore" });
-      console.log(`✅ Killed existing process(es) on port ${port}`);
-      return true;
+async function findFreePort(startPort: number, maxAttempts = 10): Promise<number> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const candidate = startPort + i;
+    if (!(await isPortInUse(candidate))) {
+      return candidate;
     }
-  } catch {
-    // No process found on port, or kill failed - that's fine
   }
-  return false;
+  throw new Error(
+    `No free port found in range ${startPort}–${startPort + maxAttempts - 1}`
+  );
 }
 
-/**
- * Ensure the port is free, killing any existing process if needed
- */
-async function ensurePortFree(port: number): Promise<void> {
-  if (await isPortInUse(port)) {
-    killProcessOnPort(port);
-    // Wait a moment for the port to be released
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    
-    // Check again
-    if (await isPortInUse(port)) {
-      throw new Error(`Port ${port} is still in use after attempting to free it`);
-    }
-  }
-}
 
 const REFLECT_CLIENT_ID = "55798f25d5a24efb95e4174fff3d219e";
 const LAUNCH_AGENT_LABEL = "com.reflect-mcp";
@@ -152,10 +135,6 @@ async function install(installArgs: string[]): Promise<void> {
   } catch {
     // Ignore errors - service might not exist yet
   }
-
-  // Kill any stale processes on the port
-  killProcessOnPort(port);
-  await new Promise((resolve) => setTimeout(resolve, 300));
 
   // Create plist content
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -270,22 +249,31 @@ function status(): void {
 
 async function runServer(serverArgs: string[]): Promise<void> {
   let dbPath = DEFAULT_DB_PATH;
-  let port = 3000;
+  let requestedPort = 3000;
 
   for (let i = 0; i < serverArgs.length; i++) {
     if (serverArgs[i] === "--port" && serverArgs[i + 1]) {
-      port = parseInt(serverArgs[++i]);
+      requestedPort = parseInt(serverArgs[++i]);
     } else if (!serverArgs[i].startsWith("--")) {
       dbPath = serverArgs[i];
     }
   }
 
-  // Ensure port is free before starting
+  // Find the first free port at or above the requested port.
+  // This allows multiple MCP clients to each get their own HTTP server
+  // without killing other running instances.
+  let port: number;
   try {
-    await ensurePortFree(port);
+    port = await findFreePort(requestedPort);
   } catch (err) {
-    console.error(`❌ ${err}`);
+    console.error(`[reflect-mcp] ${err}`);
     process.exit(1);
+  }
+
+  if (port !== requestedPort) {
+    console.error(
+      `[reflect-mcp] Requested port ${requestedPort} is in use — using port ${port} instead`
+    );
   }
 
   try {
@@ -294,8 +282,7 @@ async function runServer(serverArgs: string[]): Promise<void> {
       port,
       dbPath,
     });
-    console.log(`Reflect MCP Server running on http://localhost:${port}`);
-    console.log(`Database: ${dbPath}`);
+    console.error(`[reflect-mcp] HTTP server running on http://localhost:${port}`);
   } catch (err) {
     console.error("Failed to start server:", err);
     process.exit(1);
