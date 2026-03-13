@@ -39,28 +39,29 @@ export function findLocalDatabase(): string | null {
   
   // Search for database files in the File System directory
   // Structure is typically: File System/XXX/t/XX/XXXXXXXX
+  // Reflect may have multiple database partitions (000, 001, etc.)
+  // so we find all SQLite files and return the most recently modified one.
   try {
     const entries = fs.readdirSync(basePath);
+    let bestPath: string | null = null;
+    let bestMtime = 0;
     
     for (const entry of entries) {
       const entryPath = path.join(basePath, entry);
       const tPath = path.join(entryPath, "t");
       
       if (fs.existsSync(tPath) && fs.statSync(tPath).isDirectory()) {
-        // Look for subdirectories in t/
         const tEntries = fs.readdirSync(tPath);
         
         for (const tEntry of tEntries) {
           const subPath = path.join(tPath, tEntry);
           
           if (fs.statSync(subPath).isDirectory()) {
-            // Look for database files (8-char hex names)
             const dbFiles = fs.readdirSync(subPath);
             
             for (const dbFile of dbFiles) {
               const dbPath = path.join(subPath, dbFile);
               
-              // Check if it's a valid SQLite database (starts with SQLite header)
               if (fs.statSync(dbPath).isFile()) {
                 try {
                   const header = Buffer.alloc(16);
@@ -68,9 +69,12 @@ export function findLocalDatabase(): string | null {
                   fs.readSync(fd, header, 0, 16, 0);
                   fs.closeSync(fd);
                   
-                  // SQLite files start with "SQLite format 3"
                   if (header.toString('utf8', 0, 15) === 'SQLite format 3') {
-                    return dbPath;
+                    const mtime = fs.statSync(dbPath).mtimeMs;
+                    if (mtime > bestMtime) {
+                      bestMtime = mtime;
+                      bestPath = dbPath;
+                    }
                   }
                 } catch {
                   // Not a readable file, skip
@@ -81,11 +85,11 @@ export function findLocalDatabase(): string | null {
         }
       }
     }
+    
+    return bestPath;
   } catch {
     return null;
   }
-  
-  return null;
 }
 
 /**
@@ -98,7 +102,7 @@ export function getDefaultDbPath(): string {
     return found;
   }
   if (os.platform() === "darwin") {
-    return expandPath("~/Library/Application Support/Reflect/File System/000/t/00/00000000");
+    return expandPath("~/Library/Application Support/Reflect/File System/001/t/00/00000000");
   }
   return "";
 }
