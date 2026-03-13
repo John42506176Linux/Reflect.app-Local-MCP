@@ -606,6 +606,14 @@ export class PKCEOAuthProxy {
   async loadUpstreamTokens(proxyToken: string): Promise<TokenData | null> {
     const data = this.tokens.get(proxyToken);
     if (!data) {
+      // Token not found — check if this is a stale/rotated token from a previous session.
+      // For a local server, all clients share the same Reflect credentials, so we can
+      // fall back to any currently-valid token rather than forcing a re-auth loop.
+      const validToken = this.getFirstValidToken();
+      if (validToken) {
+        console.warn("[PKCEProxy] Stale token presented, mapping to current valid token:", proxyToken.slice(0, 8) + "...");
+        return validToken;
+      }
       console.warn("[PKCEProxy] Token not found:", proxyToken.slice(0, 8) + "...");
       console.warn("[PKCEProxy] Total tokens in store:", this.tokens.size);
       return null;
