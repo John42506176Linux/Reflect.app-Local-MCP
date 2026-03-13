@@ -144,11 +144,6 @@ export class PKCEOAuthProxy {
   private recentlyExchangedCodes = new Map<string, { accessToken: string; expiresAt: Date }>();
   private cleanupInterval: NodeJS.Timeout | null = null;
   
-  // In-memory mutex to prevent race conditions during token operations
-  // This ensures only one client can exchange a code at a time
-  private tokenMutex: Map<string, Promise<void>> = new Map();
-  private tokenMutexBusy = false;
-  
   // Active connections counter for debugging
   private activeConnections = 0;
 
@@ -215,7 +210,7 @@ export class PKCEOAuthProxy {
         );
       });
       
-      console.log(`[PKCEProxy] Saved ${toStore.length} tokens to disk`);
+      console.log(`[PKCEProxy] Saved ${Object.keys(toStore).length} tokens to disk`);
     } catch (error) {
       console.error("[PKCEProxy] Failed to save tokens to disk:", error);
     }
@@ -277,7 +272,7 @@ export class PKCEOAuthProxy {
         );
       });
       
-      console.log(`[PKCEProxy] Saved ${toStore.length} transactions to disk`);
+      console.log(`[PKCEProxy] Saved ${Object.keys(toStore).length} transactions to disk`);
     } catch (error) {
       console.error("[PKCEProxy] Failed to save transactions to disk:", error);
     }
@@ -331,6 +326,26 @@ export class PKCEOAuthProxy {
       return new Response(JSON.stringify({ error: "unsupported_response_type" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // If we already have a valid token, skip the full OAuth dance.
+    // Issue a proxy code immediately so subsequent clients never need a browser.
+    const existingToken = this.getFirstValidToken();
+    if (existingToken) {
+      console.log("[PKCEProxy] Valid token exists — issuing proxy code directly (skipping OAuth)");
+      const proxyCode = this.generateId();
+      this.tokens.set(proxyCode, { ...existingToken });
+      await this.saveTokensToDisk();
+
+      const clientRedirect = new URL(params.redirect_uri);
+      clientRedirect.searchParams.set("code", proxyCode);
+      clientRedirect.searchParams.set("state", params.state || "");
+
+      console.log("[PKCEProxy] Redirecting client directly to:", clientRedirect.toString());
+      return new Response(null, {
+        status: 302,
+        headers: { Location: clientRedirect.toString() },
       });
     }
 
@@ -509,94 +524,41 @@ export class PKCEOAuthProxy {
       }
     }
 
-    // Acquire mutex for this specific code to prevent race conditions
-    // This ensures only ONE client can exchange a given code at a time
-    let releaseMutex: (() => void) | undefined;
-    const acquireMutex = async (): Promise<void> => {
-      const codeKey = `code_${params.code}`;
-      while (this.tokenMutex.has(codeKey)) {
-        // Wait for the current exchange to complete
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-      
-      // Create a pending promise to indicate we're acquiring the lock
-      const pending = new Promise<void>(resolve => {
-        releaseMutex = resolve;
-        this.tokenMutex.set(codeKey, Promise.resolve());
-      });
-      
-      // Check if we got the lock before another concurrent request took it
-      if (this.tokenMutex.get(codeKey) !== pending) {
-        this.tokenMutex.delete(codeKey);
-        return acquireMutex(); // Try again
-      }
-      
-      await pending;
-    };
-
-    const releaseMutexForCode = (code: string) => {
-      const codeKey = `code_${code}`;
-      this.tokenMutex.delete(codeKey);
-    };
-
-    try {
-      await acquireMutex();
-      
-      // Check again after acquiring mutex - another request might have already processed this code
-      const cachedExchange = this.recentlyExchangedCodes.get(params.code);
-      if (cachedExchange && cachedExchange.expiresAt > new Date()) {
-        const cachedTokenData = this.tokens.get(cachedExchange.accessToken);
-        if (cachedTokenData) {
-          const expiresIn = Math.floor((cachedTokenData.expiresAt.getTime() - Date.now()) / 1000);
-          return {
-            access_token: cachedExchange.accessToken,
-            token_type: "Bearer",
-            expires_in: expiresIn > 0 ? expiresIn : 3600,
-          };
-        }
-      }
-
-      const tokenData = this.tokens.get(params.code);
-      if (!tokenData) {
-        console.error(`[PKCEProxy] Token not found for code: ${params.code}`);
-        console.error(`[PKCEProxy] Available tokens:`, Array.from(this.tokens.keys()).map(k => k.slice(0, 8) + "..."));
-        console.error(`[PKCEProxy] Recently exchanged codes:`, Array.from(this.recentlyExchangedCodes.keys()).map(k => k.slice(0, 8) + "..."));
-        throw new OAuthProxyError("invalid_grant", "Invalid or expired authorization code", 400);
-      }
-
-      // Remove the code but keep track of it for retry tolerance (30 second window)
-      // Mark as exchanged BEFORE saving to disk to prevent race conditions
-      this.tokens.delete(params.code);
-
-      // Generate a new access token for the client
-      const accessToken = this.generateId();
-      this.tokens.set(accessToken, tokenData);
-      
-      // Store the exchange for retry tolerance (30 seconds) - mark as exchanged
-      this.recentlyExchangedCodes.set(params.code, {
-        accessToken,
-        expiresAt: new Date(Date.now() + 30 * 1000),
-      });
-
-      // Now save to disk - this is the only write operation during the critical section
-      await this.saveTokensToDisk();
-
-      const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
-      console.log(`[PKCEProxy] Issued access token (expires in ${expiresIn}s) for code: ${params.code.slice(0, 8)}...`);
-
-      return {
-        access_token: accessToken,
-        token_type: "Bearer",
-        expires_in: expiresIn > 0 ? expiresIn : 3600,
-        // Note: Not returning refresh_token since Reflect doesn't support refresh_token grant
-        // This tells the MCP client to re-authenticate via OAuth when the token expires
-      };
-    } catch (error) {
-      throw error;
-    } finally {
-      // Release the mutex
-      releaseMutexForCode(params.code);
+    const tokenData = this.tokens.get(params.code);
+    if (!tokenData) {
+      console.error(`[PKCEProxy] Token not found for code: ${params.code}`);
+      console.error(`[PKCEProxy] Available tokens:`, Array.from(this.tokens.keys()).map(k => k.slice(0, 8) + "..."));
+      console.error(`[PKCEProxy] Recently exchanged codes:`, Array.from(this.recentlyExchangedCodes.keys()).map(k => k.slice(0, 8) + "..."));
+      throw new OAuthProxyError("invalid_grant", "Invalid or expired authorization code", 400);
     }
+
+    // Remove the code but keep track of it for retry tolerance (30 second window)
+    // Mark as exchanged BEFORE saving to disk to prevent race conditions
+    this.tokens.delete(params.code);
+
+    // Generate a new access token for the client
+    const accessToken = this.generateId();
+    this.tokens.set(accessToken, tokenData);
+
+    // Store the exchange for retry tolerance (30 seconds) - mark as exchanged
+    this.recentlyExchangedCodes.set(params.code, {
+      accessToken,
+      expiresAt: new Date(Date.now() + 30 * 1000),
+    });
+
+    // Now save to disk
+    await this.saveTokensToDisk();
+
+    const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
+    console.log(`[PKCEProxy] Issued access token (expires in ${expiresIn}s) for code: ${params.code.slice(0, 8)}...`);
+
+    return {
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: expiresIn > 0 ? expiresIn : 3600,
+      // Note: Not returning refresh_token since Reflect doesn't support refresh_token grant
+      // This tells the MCP client to re-authenticate via OAuth when the token expires
+    };
   }
 
   // Handle refresh token exchange
@@ -644,6 +606,14 @@ export class PKCEOAuthProxy {
   async loadUpstreamTokens(proxyToken: string): Promise<TokenData | null> {
     const data = this.tokens.get(proxyToken);
     if (!data) {
+      // Token not found — check if this is a stale/rotated token from a previous session.
+      // For a local server, all clients share the same Reflect credentials, so we can
+      // fall back to any currently-valid token rather than forcing a re-auth loop.
+      const validToken = this.getFirstValidToken();
+      if (validToken) {
+        console.warn("[PKCEProxy] Stale token presented, mapping to current valid token:", proxyToken.slice(0, 8) + "...");
+        return validToken;
+      }
       console.warn("[PKCEProxy] Token not found:", proxyToken.slice(0, 8) + "...");
       console.warn("[PKCEProxy] Total tokens in store:", this.tokens.size);
       return null;
