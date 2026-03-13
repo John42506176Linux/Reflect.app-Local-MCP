@@ -102,6 +102,7 @@ export async function startReflectMCPServer(config: ServerConfig): Promise<void>
   await server.start({
     httpStream: {
       port,
+      stateless: true,
     },
     transportType: "httpStream",
   });
