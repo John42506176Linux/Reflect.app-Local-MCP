@@ -72,13 +72,11 @@ export async function startReflectMCPServer(config: ServerConfig): Promise<void>
           });
         }
 
-        const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
-        console.log("[Auth] Token validated, expires in:", expiresIn, "seconds");
+        console.log("[Auth] Token validated");
 
         return {
           accessToken: tokenData.accessToken,
           refreshToken: tokenData.refreshToken,
-          expiresIn,
         };
       } catch (error) {
         // Re-throw if it's already a Response (our auth failures above)
@@ -95,14 +93,14 @@ export async function startReflectMCPServer(config: ServerConfig): Promise<void>
     version: "1.0.0",
   });
 
-  // Register all tools
-  registerTools(server, config.dbPath);
+  // Register all tools (pass proxy so tools can invalidate tokens on upstream 401)
+  registerTools(server, config.dbPath, pkceProxy);
 
   // Start server
   await server.start({
     httpStream: {
       port,
-      stateless: true,
+      stateless: false,
     },
     transportType: "httpStream",
   });
@@ -135,11 +133,9 @@ export async function startReflectMCPServerStdio(config: ServerConfig): Promise<
         console.error("[Auth] No valid token on disk. Connect via HTTP mode first to complete OAuth.");
         throw new Error("No valid token. Please authenticate via HTTP mode first.");
       }
-      const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
-      console.error("[Auth] Stdio mode: token loaded from disk, expires in:", expiresIn, "seconds");
+      console.error("[Auth] Stdio mode: token loaded from disk");
       return {
         accessToken: tokenData.accessToken,
-        expiresIn,
       };
     },
     version: "1.0.0",

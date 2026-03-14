@@ -8,8 +8,9 @@ import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import Database from "better-sqlite3";
 import { DEFAULT_DB_PATH, expandPath, stripHtml, formatDate, getDateForTimezone } from "../utils.js";
+import type { PKCEOAuthProxy } from "../pkcehandler.js";
 
-export function registerTools(server: FastMCP, dbPath?: string): void {
+export function registerTools(server: FastMCP, dbPath?: string, pkceProxy?: PKCEOAuthProxy): void {
   const resolvedDbPath = expandPath(dbPath || DEFAULT_DB_PATH);
   // Tool: Get all Reflect graphs
   server.addTool({
@@ -38,6 +39,9 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
         });
 
         if (!response.ok) {
+          if (response.status === 401 && pkceProxy) {
+            await pkceProxy.invalidateUpstreamToken(accessToken);
+          }
           throw new Error(`HTTP error! status: ${response.status}`);
         }
 
@@ -742,6 +746,9 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
         });
         
         if (!response.ok) {
+          if (response.status === 401 && pkceProxy) {
+            await pkceProxy.invalidateUpstreamToken(accessToken);
+          }
           const errorText = await response.text();
           throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
         }
@@ -763,6 +770,9 @@ export function registerTools(server: FastMCP, dbPath?: string): void {
         });
         
         if (!dailyNoteResponse.ok) {
+          if (dailyNoteResponse.status === 401 && pkceProxy) {
+            await pkceProxy.invalidateUpstreamToken(accessToken);
+          }
           const errorText = await dailyNoteResponse.text();
           console.error(`Failed to append to daily notes: ${dailyNoteResponse.status}, ${errorText}`);
         }

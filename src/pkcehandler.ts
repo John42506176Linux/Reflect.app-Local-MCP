@@ -144,6 +144,9 @@ export class PKCEOAuthProxy {
   private recentlyExchangedCodes = new Map<string, { accessToken: string; expiresAt: Date }>();
   private cleanupInterval: NodeJS.Timeout | null = null;
   
+  // Debounce: track pending auth so concurrent requests don't each open a browser
+  private pendingAuthTransaction: { transactionId: string; authUrl: string; expiresAt: Date } | null = null;
+
   // Active connections counter for debugging
   private activeConnections = 0;
 
@@ -171,15 +174,11 @@ export class PKCEOAuthProxy {
         const stored = JSON.parse(data) as Record<string, SerializedTokenData>;
         
         for (const [key, value] of Object.entries(stored)) {
-          const expiresAt = new Date(value.expiresAt);
-          // Only load non-expired tokens
-          if (expiresAt > new Date()) {
-            this.tokens.set(key, {
-              accessToken: value.accessToken,
-              refreshToken: value.refreshToken,
-              expiresAt,
-            });
-          }
+          this.tokens.set(key, {
+            accessToken: value.accessToken,
+            refreshToken: value.refreshToken,
+            expiresAt: new Date(value.expiresAt),
+          });
         }
         console.log(`[PKCEProxy] Loaded ${this.tokens.size} tokens from disk`);
       }
@@ -349,6 +348,16 @@ export class PKCEOAuthProxy {
       });
     }
 
+    // Debounce: if another request already started auth, reuse its redirect
+    // instead of opening yet another browser tab
+    if (this.pendingAuthTransaction && this.pendingAuthTransaction.expiresAt > new Date()) {
+      console.log("[PKCEProxy] Auth already in progress — reusing pending transaction:", this.pendingAuthTransaction.transactionId.slice(0, 8) + "...");
+      return new Response(null, {
+        status: 302,
+        headers: { Location: this.pendingAuthTransaction.authUrl },
+      });
+    }
+
     // Generate our own PKCE for upstream
     const pkce = this.generatePKCE();
     const transactionId = this.generateId();
@@ -377,6 +386,13 @@ export class PKCEOAuthProxy {
     authUrl.searchParams.set("state", transactionId); // Use transaction ID as state
     authUrl.searchParams.set("code_challenge", pkce.challenge);
     authUrl.searchParams.set("code_challenge_method", "S256");
+
+    // Store as pending so concurrent requests reuse this instead of opening more browsers
+    this.pendingAuthTransaction = {
+      transactionId,
+      authUrl: authUrl.toString(),
+      expiresAt: new Date(Date.now() + 60 * 1000), // 60 second debounce window
+    };
 
     console.log("[PKCEProxy] Redirecting to:", authUrl.toString());
 
@@ -459,14 +475,14 @@ export class PKCEOAuthProxy {
       refresh_token?: string;
       expires_in?: number;
     };
-    console.log("[PKCEProxy] Got tokens, expires_in:", tokens.expires_in);
+    console.log("[PKCEProxy] Reflect token response:", JSON.stringify(tokens, null, 2));
 
     // Generate a proxy token to give to the client
     const proxyToken = this.generateId();
     this.tokens.set(proxyToken, {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
-      expiresAt: new Date(Date.now() + (tokens.expires_in || 3600) * 1000),
+      expiresAt: new Date(Date.now() + (tokens.expires_in || 365 * 24 * 3600) * 1000),
     });
     await this.saveTokensToDisk(); // Persist to disk (async now)
 
@@ -475,8 +491,9 @@ export class PKCEOAuthProxy {
     clientRedirect.searchParams.set("code", proxyToken);
     clientRedirect.searchParams.set("state", transaction.clientState);
 
-    // Clean up transaction
+    // Clean up transaction and pending auth debounce
     this.transactions.delete(state);
+    this.pendingAuthTransaction = null;
     await this.saveTransactionsToDisk();
 
     console.log("[PKCEProxy] Redirecting to client:", clientRedirect.toString());
@@ -498,7 +515,6 @@ export class PKCEOAuthProxy {
   }): Promise<{
     access_token: string;
     token_type: string;
-    expires_in: number;
     refresh_token?: string;
     scope?: string;
   }> {
@@ -519,7 +535,6 @@ export class PKCEOAuthProxy {
         return {
           access_token: recentExchange.accessToken,
           token_type: "Bearer",
-          expires_in: expiresIn > 0 ? expiresIn : 3600,
         };
       }
     }
@@ -549,21 +564,19 @@ export class PKCEOAuthProxy {
     // Now save to disk
     await this.saveTokensToDisk();
 
-    const expiresIn = Math.floor((tokenData.expiresAt.getTime() - Date.now()) / 1000);
-    console.log(`[PKCEProxy] Issued access token (expires in ${expiresIn}s) for code: ${params.code.slice(0, 8)}...`);
+    console.log(`[PKCEProxy] Issued access token for code: ${params.code.slice(0, 8)}...`);
+
+    const refreshToken = `refresh_${this.generateId()}`;
+    this.tokens.set(refreshToken, { ...tokenData });
+    await this.saveTokensToDisk();
 
     return {
       access_token: accessToken,
       token_type: "Bearer",
-      expires_in: expiresIn > 0 ? expiresIn : 3600,
-      // Note: Not returning refresh_token since Reflect doesn't support refresh_token grant
-      // This tells the MCP client to re-authenticate via OAuth when the token expires
+      refresh_token: refreshToken,
     };
   }
 
-  // Handle refresh token exchange
-  // Note: Reflect's API doesn't support standard refresh_token grant
-  // We throw an OAuthProxyError to trigger re-authentication via OAuth flow
   async exchangeRefreshToken(params: {
     grant_type: string;
     refresh_token: string;
@@ -572,17 +585,57 @@ export class PKCEOAuthProxy {
   }): Promise<{
     access_token: string;
     token_type: string;
-    expires_in: number;
     refresh_token?: string;
   }> {
-    console.log("[PKCEProxy] exchangeRefreshToken called - Reflect doesn't support refresh_token grant");
-    console.log("[PKCEProxy] Triggering re-authentication via OAuth flow...");
-    
-    // Reflect's token endpoint only accepts authorization_code grant, not refresh_token
-    // Throw OAuthProxyError so FastMCP handles it properly and triggers re-auth
+    console.log(`[PKCEProxy] exchangeRefreshToken called with: ${params.refresh_token.slice(0, 12)}...`);
+
+    const tokenData = this.tokens.get(params.refresh_token);
+    if (tokenData) {
+      const newAccessToken = this.generateId();
+      this.tokens.set(newAccessToken, { ...tokenData });
+
+      const newRefreshToken = `refresh_${this.generateId()}`;
+      this.tokens.set(newRefreshToken, { ...tokenData });
+
+      this.tokens.delete(params.refresh_token);
+      await this.saveTokensToDisk();
+
+      console.log(`[PKCEProxy] Refreshed silently`);
+
+      return {
+        access_token: newAccessToken,
+        token_type: "Bearer",
+        refresh_token: newRefreshToken,
+      };
+    }
+
+    // Refresh token not found — fall back to any available token
+    const validToken = this.getFirstValidToken();
+    if (validToken) {
+      console.log("[PKCEProxy] Refresh token not found, using fallback token");
+      const newAccessToken = this.generateId();
+      this.tokens.set(newAccessToken, { ...validToken });
+
+      const newRefreshToken = `refresh_${this.generateId()}`;
+      this.tokens.set(newRefreshToken, { ...validToken });
+
+      this.tokens.delete(params.refresh_token);
+      await this.saveTokensToDisk();
+
+      console.log(`[PKCEProxy] Issued token from fallback`);
+
+      return {
+        access_token: newAccessToken,
+        token_type: "Bearer",
+        refresh_token: newRefreshToken,
+      };
+    }
+
+    // No tokens at all — force browser re-auth
+    console.log("[PKCEProxy] No tokens available — forcing re-authentication");
     throw new OAuthProxyError(
       "invalid_grant",
-      "Refresh tokens are not supported. Please re-authenticate.",
+      "All tokens expired. Please re-authenticate.",
       400
     );
   }
@@ -602,13 +655,39 @@ export class PKCEOAuthProxy {
     };
   }
 
+  // Validate an upstream Reflect token by calling the API
+  private async validateUpstreamToken(tokenData: TokenData): Promise<boolean> {
+    try {
+      const response = await fetch("https://reflect.app/api/users/me", {
+        headers: { Authorization: `Bearer ${tokenData.accessToken}` },
+      });
+      if (response.ok) return true;
+      console.warn("[PKCEProxy] Upstream token rejected by Reflect API:", response.status);
+      return false;
+    } catch (error) {
+      // Network error — don't invalidate, assume token is still good
+      console.warn("[PKCEProxy] Network error validating token, keeping it:", error);
+      return true;
+    }
+  }
+
+  // Invalidate all tokens that share a given upstream access token
+  async invalidateUpstreamToken(accessToken: string): Promise<void> {
+    let changed = false;
+    for (const [id, token] of this.tokens) {
+      if (token.accessToken === accessToken) {
+        console.log("[PKCEProxy] Invalidating token with revoked upstream:", id.slice(0, 8) + "...");
+        this.tokens.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) await this.saveTokensToDisk();
+  }
+
   // Load upstream tokens for a given proxy token
   async loadUpstreamTokens(proxyToken: string): Promise<TokenData | null> {
     const data = this.tokens.get(proxyToken);
     if (!data) {
-      // Token not found — check if this is a stale/rotated token from a previous session.
-      // For a local server, all clients share the same Reflect credentials, so we can
-      // fall back to any currently-valid token rather than forcing a re-auth loop.
       const validToken = this.getFirstValidToken();
       if (validToken) {
         console.warn("[PKCEProxy] Stale token presented, mapping to current valid token:", proxyToken.slice(0, 8) + "...");
@@ -618,27 +697,13 @@ export class PKCEOAuthProxy {
       console.warn("[PKCEProxy] Total tokens in store:", this.tokens.size);
       return null;
     }
-    const now = new Date();
-    if (data.expiresAt < now) {
-      console.warn("[PKCEProxy] Token expired:", proxyToken.slice(0, 8) + "...", "expired at:", data.expiresAt, "now:", now);
-      this.tokens.delete(proxyToken);
-      await this.saveTokensToDisk();
-      return null;
-    }
-    const timeRemaining = Math.floor((data.expiresAt.getTime() - now.getTime()) / 1000);
-    if (timeRemaining < 300) { // Less than 5 minutes remaining
-      console.warn("[PKCEProxy] Token expiring soon:", proxyToken.slice(0, 8) + "...", "remaining:", timeRemaining, "seconds");
-    }
     return data;
   }
 
-  // Get first valid token (for stdio mode where we don't have specific token ID)
+  // Get first available token (any token in the store)
   getFirstValidToken(): TokenData | null {
-    const now = new Date();
     for (const [id, token] of this.tokens) {
-      if (token.expiresAt > now) {
-        return token;
-      }
+      return token;
     }
     return null;
   }
@@ -647,7 +712,6 @@ export class PKCEOAuthProxy {
   private async startCleanup(): Promise<void> {
     const cleanup = async () => {
       const now = new Date();
-      let tokensChanged = false;
       let transactionsChanged = false;
       
       for (const [id, tx] of this.transactions) {
@@ -656,23 +720,12 @@ export class PKCEOAuthProxy {
           transactionsChanged = true;
         }
       }
-      for (const [id, token] of this.tokens) {
-        if (token.expiresAt < now) {
-          console.log("[PKCEProxy] Cleaning up expired token:", id.slice(0, 8) + "...");
-          this.tokens.delete(id);
-          tokensChanged = true;
-        }
-      }
-      // Clean up expired retry cache entries
       for (const [code, data] of this.recentlyExchangedCodes) {
         if (data.expiresAt < now) {
           this.recentlyExchangedCodes.delete(code);
         }
       }
       
-      if (tokensChanged) {
-        await this.saveTokensToDisk();
-      }
       if (transactionsChanged) {
         await this.saveTransactionsToDisk();
       }
